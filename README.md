@@ -331,11 +331,19 @@ The wiki server runs as a macOS launch agent (`com.memory-wiki`):
 
 ## Requirements
 
-- **macOS** (launch agent support)
+- **macOS** (launch agent support) or **Linux** (systemd user services)
 - **Hermes Agent** ([install](https://hermes-agent.nousresearch.com))
 - **Node.js** v18+ ([install](https://nodejs.org))
 - **Python** v3.8+ (stdlib only, no pip packages needed)
 - **Git** (for cloning)
+
+### Linux-Specific Notes
+
+- Requires `systemd --user` (most distros have it)
+- Headless deployments use `loginctl enable-linger "$USER"` so the user service starts after reboot without an active login session
+- If lingering is disabled, the service starts only after the user logs in
+- Package dependencies: `nodejs`, `python3`, `sqlite3`, `git`, `curl`
+- Optional: `lsof` for port checks, `iproute2` for `ss` fallback, `xdg-utils` for browser open
 
 ## Troubleshooting
 
@@ -370,7 +378,7 @@ Contributions welcome! Areas of interest:
 - Additional project classification keywords
 - Enhanced summary generation
 - Alternative frontend themes
-- Windows/Linux support (currently macOS-only)
+- Windows support (currently macOS/Linux)
 
 ## License
 
