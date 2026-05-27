@@ -4,7 +4,7 @@ This is the Memory Wiki ecosystem. See `README.md` for full documentation.
 
 ## Key facts
 
-- **Wiki server:** `http://localhost:9876` (launch agent: `com.memory-wiki`)
+- **Wiki server:** `http://localhost:9876` (service: `com.memory-wiki` on macOS, `memory-wiki.service` on Linux)
 - **Data directory:** `data/` (sessions, index, projects, daily logs)
 - **Scanner:** `python3 scripts/scan_sessions.py --summarize`
 - **Index generator:** `python3 scripts/generate_index.py`

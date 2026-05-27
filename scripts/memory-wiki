@@ -1,0 +1,85 @@
+#!/bin/bash
+# memory-wiki — CLI for the Hermes Memory Wiki
+# Usage: memory-wiki [start|stop|restart|status|open|rescan|backup|restore]
+#
+# Detects macOS vs Linux and uses the appropriate service manager.
+
+set -euo pipefail
+
+detect_os() {
+  case "$(uname -s)" in
+    Darwin*) echo "macos" ;;
+    Linux*)  echo "linux" ;;
+    *)       echo "unknown" ;;
+  esac
+}
+
+OS=$(detect_os)
+
+# Portable WIKI_DIR — no readlink -f needed
+WIKI_DIR="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd -P)"
+[[ ! -f "$WIKI_DIR/package.json" ]] && WIKI_DIR="$HOME/workspace/hermes-memory-wiki"
+
+URL="http://localhost:9876"
+
+case "${1:-status}" in
+  start)
+    if [[ "$OS" == "macos" ]]; then
+      launchctl load ~/Library/LaunchAgents/com.memory-wiki.plist 2>/dev/null
+    elif [[ "$OS" == "linux" ]]; then
+      systemctl --user start memory-wiki 2>/dev/null
+    fi
+    sleep 3; curl -s -o /dev/null "$URL" && echo "Started at $URL" || echo "Starting..."
+    ;;
+  stop)
+    if [[ "$OS" == "macos" ]]; then
+      launchctl unload ~/Library/LaunchAgents/com.memory-wiki.plist 2>/dev/null
+    elif [[ "$OS" == "linux" ]]; then
+      systemctl --user stop memory-wiki 2>/dev/null
+    fi
+    echo "Stopped"
+    ;;
+  restart)
+    if [[ "$OS" == "macos" ]]; then
+      launchctl unload ~/Library/LaunchAgents/com.memory-wiki.plist 2>/dev/null
+      sleep 2
+      launchctl load ~/Library/LaunchAgents/com.memory-wiki.plist 2>/dev/null
+    elif [[ "$OS" == "linux" ]]; then
+      systemctl --user restart memory-wiki 2>/dev/null
+    fi
+    sleep 3; echo "Restarted at $URL"
+    ;;
+  status)
+    if curl -s -o /dev/null "$URL" 2>/dev/null; then
+      echo "Running at $URL"
+    else
+      echo "Not running. Start with: memory-wiki start"
+    fi
+    ;;
+  open)
+    if curl -s -o /dev/null "$URL" 2>/dev/null; then
+      if [[ "$OS" == "macos" ]]; then
+        open "$URL"
+      elif [[ "$OS" == "linux" ]]; then
+        xdg-open "$URL"
+      fi
+    else
+      echo "Not running. Start with: memory-wiki start"
+    fi
+    ;;
+  rescan)
+    echo "Scanning..."
+    cd "$WIKI_DIR" && python3 scripts/scan_sessions.py --summarize 2>&1 | tail -3
+    ;;
+  backup)
+    echo "Backing up..."
+    bash "$WIKI_DIR/scripts/memory-wiki-backup.sh" 2>&1 | tail -2
+    ;;
+  restore)
+    [[ -z "${2:-}" ]] && { echo "Usage: memory-wiki restore <backup-file>"; exit 1; }
+    bash "$WIKI_DIR/scripts/memory-wiki-restore.sh" "$2"
+    ;;
+  *)
+    echo "Usage: memory-wiki [start|stop|restart|status|open|rescan|backup|restore]"
+    ;;
+esac

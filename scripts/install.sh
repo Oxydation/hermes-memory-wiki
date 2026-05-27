@@ -5,11 +5,44 @@
 
 set -euo pipefail
 
+# ── OS detection ──────────────────────────────────────────────────────────
+detect_os() {
+  case "$(uname -s)" in
+    Darwin*) echo "macos" ;;
+    Linux*)  echo "linux" ;;
+    *)       echo "unknown" ;;
+  esac
+}
+
+script_dir() {
+  cd "$(dirname "$0")" && pwd -P
+}
+
+OS=$(detect_os)
+
+# ── Shell detection for PATH append ───────────────────────────────────────
+detect_shell_rc() {
+  local shell_name
+  shell_name="$(basename "${SHELL:-/bin/bash}")"
+  case "$shell_name" in
+    zsh)  echo "$HOME/.zshrc" ;;
+    bash) echo "$HOME/.bashrc" ;;
+    *)    echo "$HOME/.profile" ;;
+  esac
+}
+
 # ── Config ──────────────────────────────────────────────────────────────
 HERMES_MEMORY_WIKI_DIR="$HOME/workspace/hermes-memory-wiki"
 HERMES_STATE_DB="$HOME/.hermes/state.db"
 HERMES_SKILLS_DIR="$HOME/.hermes/skills"
-LAUNCH_AGENT_PLIST="$HOME/Library/LaunchAgents/com.memory-wiki.plist"
+
+if [[ "$OS" == "macos" ]]; then
+  SERVICE_PLIST="$HOME/Library/LaunchAgents/com.memory-wiki.plist"
+elif [[ "$OS" == "linux" ]]; then
+  SERVICE_UNIT_DIR="$HOME/.config/systemd/user"
+  SERVICE_UNIT="$SERVICE_UNIT_DIR/memory-wiki.service"
+fi
+
 MEMORY_WIKI_CLI="$HOME/bin/memory-wiki"
 PORT=9876
 
@@ -71,8 +104,12 @@ else
 fi
 
 # Check for port conflicts
-if lsof -i :$PORT &>/dev/null; then
+if lsof -i :$PORT &>/dev/null 2>&1; then
     warn "Port $PORT is already in use. The wiki may not start until it's freed."
+elif [[ "$OS" == "linux" ]] && command -v ss &>/dev/null; then
+    if ss -tln "( sport = :$PORT )" 2>/dev/null | grep -q LISTEN; then
+        warn "Port $PORT is already in use. The wiki may not start until it's freed."
+    fi
 fi
 
 echo ""
@@ -113,11 +150,13 @@ info "Running initial session scan..."
 python3 scripts/scan_sessions.py --summarize 2>&1 | tail -3
 ok "Sessions scanned and indexed"
 
-# ── Step 4: Install launch agent ─────────────────────────────────────────
+# ── Step 4: Install service (launch agent / systemd) ───────────────────────
 echo ""
-info "Installing launch agent (auto-starts wiki server on login)..."
+if [[ "$OS" == "macos" ]]; then
+    info "Installing launch agent (auto-starts wiki server on login)..."
+    mkdir -p "$HOME/Library/LaunchAgents"
 
-cat > "$LAUNCH_AGENT_PLIST" << PLIST
+    cat > "$SERVICE_PLIST" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -145,43 +184,65 @@ cat > "$LAUNCH_AGENT_PLIST" << PLIST
 </plist>
 PLIST
 
-launchctl unload "$LAUNCH_AGENT_PLIST" 2>/dev/null || true
-sleep 1
-launchctl load "$LAUNCH_AGENT_PLIST"
-ok "Launch agent installed"
+    launchctl unload "$SERVICE_PLIST" 2>/dev/null || true
+    sleep 1
+    launchctl load "$SERVICE_PLIST"
+    ok "Launch agent installed"
+
+elif [[ "$OS" == "linux" ]]; then
+    info "Installing systemd user service (auto-starts wiki server)..."
+    mkdir -p "$SERVICE_UNIT_DIR"
+
+    NEXT_BIN="$HERMES_MEMORY_WIKI_DIR/node_modules/.bin/next"
+    cat > "$SERVICE_UNIT" << UNIT
+[Unit]
+Description=Hermes Memory Wiki
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$NEXT_BIN dev -p $PORT
+WorkingDirectory=$HERMES_MEMORY_WIKI_DIR
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:$HERMES_MEMORY_WIKI_DIR/.server.log
+StandardError=append:$HERMES_MEMORY_WIKI_DIR/.server-error.log
+
+[Install]
+WantedBy=default.target
+UNIT
+
+    systemctl --user daemon-reload 2>/dev/null
+    systemctl --user enable --now memory-wiki 2>/dev/null || warn "systemctl enable failed — run 'systemctl --user enable --now memory-wiki' manually"
+
+    if command -v loginctl &>/dev/null; then
+        if [[ -t 0 ]]; then
+            read -rp "Enable headless boot start with loginctl enable-linger? [Y/n]: " LINGER
+            LINGER="${LINGER:-Y}"
+            if [[ "$LINGER" =~ ^[Yy] ]]; then
+                loginctl enable-linger "$USER" 2>/dev/null && ok "User lingering enabled — service will start after reboot" || warn "Could not enable lingering"
+            fi
+        else
+            loginctl enable-linger "$USER" 2>/dev/null && ok "User lingering enabled for headless boot" || warn "loginctl enable-linger failed — service may not start without a user session"
+        fi
+    fi
+    ok "Systemd service installed"
+else
+    warn "Unknown OS — skipping service installation"
+fi
 
 # ── Step 5: Install convenience CLI ──────────────────────────────────────
 echo ""
 info "Installing memory-wiki CLI..."
 mkdir -p "$HOME/bin"
 
-cat > "$MEMORY_WIKI_CLI" << 'CLI'
-#!/bin/bash
-WIKI_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/../" 2>/dev/null && pwd)"
-[[ ! -f "$WIKI_DIR/package.json" ]] && WIKI_DIR="$HOME/workspace/hermes-memory-wiki"
-URL="http://localhost:9876"
-
-case "${1:-status}" in
-    start)
-        launchctl load ~/Library/LaunchAgents/com.memory-wiki.plist 2>/dev/null
-        sleep 3; curl -s -o /dev/null "$URL" && echo "✅ Started at $URL" || echo "⚠️ Starting..."
-        ;;
-    stop)    launchctl unload ~/Library/LaunchAgents/com.memory-wiki.plist 2>/dev/null; echo "⏹  Stopped" ;;
-    restart) launchctl unload ~/Library/LaunchAgents/com.memory-wiki.plist 2>/dev/null; sleep 2; launchctl load ~/Library/LaunchAgents/com.memory-wiki.plist 2>/dev/null; sleep 3; echo "✅ Restarted at $URL" ;;
-    status)  curl -s -o /dev/null "$URL" && echo "✅ Running at $URL" || echo "❌ Not running. Start with: memory-wiki start" ;;
-    open)    curl -s -o /dev/null "$URL" && open "$URL" || echo "❌ Not running. Start with: memory-wiki start" ;;
-    rescan)  echo "🔄 Scanning..."; cd "$WIKI_DIR" && python3 scripts/scan_sessions.py --summarize 2>&1 | tail -3 ;;
-    backup)  echo "📦 Backing up..."; bash "$WIKI_DIR/scripts/memory-wiki-backup.sh" 2>&1 | tail -2 ;;
-    restore) [[ -z "${2:-}" ]] && { echo "Usage: memory-wiki restore <backup-file>"; exit 1; }; bash "$WIKI_DIR/scripts/memory-wiki-restore.sh" "$2" ;;
-    *)       echo "Usage: memory-wiki [start|stop|restart|status|open|rescan|backup|restore]" ;;
-esac
-CLI
-
-chmod +m "$MEMORY_WIKI_CLI"
+cp "$HERMES_MEMORY_WIKI_DIR/scripts/memory-wiki" "$MEMORY_WIKI_CLI"
+chmod +x "$MEMORY_WIKI_CLI"
 
 # Ensure ~/bin is in PATH
+SHELL_RC="$(detect_shell_rc)"
 if ! echo "$PATH" | grep -q "$HOME/bin"; then
-    echo 'export PATH="$HOME/bin:$PATH"' >> "$HOME/.zshrc"
+    echo 'export PATH="$HOME/bin:$PATH"' >> "$SHELL_RC"
 fi
 ok "CLI installed at $MEMORY_WIKI_CLI"
 

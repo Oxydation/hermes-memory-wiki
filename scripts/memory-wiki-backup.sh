@@ -9,6 +9,16 @@
 
 set -euo pipefail
 
+detect_os() {
+  case "$(uname -s)" in
+    Darwin*) echo "macos" ;;
+    Linux*)  echo "linux" ;;
+    *)       echo "unknown" ;;
+  esac
+}
+
+OS=$(detect_os)
+
 BACKUP_DIR="${1:-$HOME/memory-wiki-backups}"
 AUTO_MODE=false
 if [[ "${1:-}" == "--auto" ]]; then AUTO_MODE=true; fi
@@ -16,7 +26,18 @@ if [[ "${1:-}" == "--auto" ]]; then AUTO_MODE=true; fi
 WIKI_DIR="${WIKI_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 STATE_DB="${HERMES_STATE_DB:-$HOME/.hermes/state.db}"
 SKILL_DIR="${HERMES_SKILLS_DIR:-$HOME/.hermes/skills}/wiki-context"
-LAUNCH_AGENT="$HOME/Library/LaunchAgents/com.memory-wiki.plist"
+
+if [[ "$OS" == "macos" ]]; then
+  SERVICE_FILE="$HOME/Library/LaunchAgents/com.memory-wiki.plist"
+  SERVICE_BASENAME="launch-agent.plist"
+elif [[ "$OS" == "linux" ]]; then
+  SERVICE_FILE="$HOME/.config/systemd/user/memory-wiki.service"
+  SERVICE_BASENAME="memory-wiki.service"
+else
+  SERVICE_FILE=""
+  SERVICE_BASENAME=""
+fi
+
 MEMORY_WIKI_CLI="$(dirname "$0")/memory-wiki"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 BACKUP_FILE="$BACKUP_DIR/memory-wiki-backup_$TIMESTAMP.tar.gz"
@@ -45,8 +66,10 @@ fi
 mkdir -p "$STAGING/skills/wiki-context"
 cp -r "$SKILL_DIR/"* "$STAGING/skills/wiki-context/" 2>/dev/null || true
 
-# 4. Launch agent plist
-cp "$LAUNCH_AGENT" "$STAGING/launch-agent.plist" 2>/dev/null || true
+# 4. Service file (plist or systemd unit)
+if [[ -n "$SERVICE_FILE" ]] && [[ -f "$SERVICE_FILE" ]]; then
+  cp "$SERVICE_FILE" "$STAGING/$SERVICE_BASENAME"
+fi
 
 # 5. Convenience CLI command
 cp "$MEMORY_WIKI_CLI" "$STAGING/memory-wiki" 2>/dev/null || true
